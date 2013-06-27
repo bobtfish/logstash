@@ -26,7 +26,10 @@ class LogStash::Outputs::NagiosNsca < LogStash::Outputs::Base
   milestone 1
 
   # The status to send to nagios. Should be 0 = OK, 1 = WARNING, 2 = CRITICAL, 3 = UNKNOWN
-  config :nagios_status, :validate => :string, :required => true
+  config :nagios_status, :validate => :string
+
+  config :nagios_status_field, :validate => :string
+  config :nagios_service_field, :validate => :string
 
   # The nagios host or IP to send logs to. It should have a NSCA daemon running.
   config :host, :validate => :string, :default => "localhost"
@@ -58,7 +61,12 @@ class LogStash::Outputs::NagiosNsca < LogStash::Outputs::Base
 
   public
   def register
-    #nothing for now
+    if @nagios_service_field and not @nagios_status_field
+      raise("You have set nagios_service_field but not nagios_status_field - unsupported")
+    end
+    if @nagios_status_field and not @nagios_service_field
+      raise("You have set nagios_status_field but not nagios_service_field - unsupported")
+    end
   end
 
   public
@@ -79,9 +87,28 @@ class LogStash::Outputs::NagiosNsca < LogStash::Outputs::Base
       return
     end
 
+    if @nagios_service_field and @nagios_status_field
+      statuses = event[@nagios_status_field].to_a
+      services = event[@nagios_service_field].to_a
+
+      @logger.debug(" STATUSES: #{statuses.join(', ')} SERVICES: #{services.join(', ')}")
+
+      if statuses.size != services.size
+        @logger.warn("Skipping nagios_nsca output; field #{@nagios_service_field} had different number of entries to #{@nagios_status_field}", "missed_event" => event)
+        return
+      end
+
+      services.each do |service|
+        send_event(event, service, statuses.shift)
+      end
+    else
+      send_event(event, event.sprintf(@nagios_service), event.sprintf(@nagios_status))
+    end
+  end # receive
+
+  def send_event(event, nagios_service, status)
     # interpolate params
     nagios_host = event.sprintf(@nagios_host)
-    nagios_service = event.sprintf(@nagios_service)
 
     # escape basic things in the log message
     # TODO: find a way to escape the message correctly
@@ -89,7 +116,6 @@ class LogStash::Outputs::NagiosNsca < LogStash::Outputs::Base
     msg.gsub!("\n", "<br/>")
     msg.gsub!("'", "&#146;")
 
-    status = event.sprintf(@nagios_status)
     if status.to_i.to_s != status # Check it round-trips to int correctly
       msg = "status '#{status}' is not numeric"
       status = 2
@@ -108,15 +134,15 @@ class LogStash::Outputs::NagiosNsca < LogStash::Outputs::Base
     cmd << %( #{@send_nsca_bin} -H #{@host} -p #{@port} -d '~')
     cmd << %( -c #{@send_nsca_config}) if @send_nsca_config
     cmd << %( 2>/dev/null >/dev/null)
-    @logger.debug("Running send_nsca command", "nagios_nsca_command" => cmd)
 
-    begin
-      system cmd
-    rescue => e
+    # N.B. system() run twice - never seems to return from the 2nd invocation
+    #   Assume this is something insane about jruby threading, changing to backticks works fine!
+    `#{cmd}`
+    if $?.exitstatus != 0
       @logger.warn("Skipping nagios_nsca output; error calling send_nsca",
-                   "error" => $!, "nagios_nsca_command" => cmd,
+                   "status" => $?.exitstatus, "nagios_nsca_command" => cmd,
                    "missed_event" => event)
-      @logger.debug("Backtrace", e.backtrace)
     end
-  end # def receive
+  end # def send_event
 end # class LogStash::Outputs::NagiosNsca
+
