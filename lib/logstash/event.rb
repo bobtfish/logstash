@@ -1,6 +1,7 @@
 # General event type. 
 #
 # Basically a light wrapper on top of a hash.
+require 'logstash/namespace'
 class LogStash::Event
   if ENV["LOGSTASH_SCHEMA"] == "1"
     require "logstash/event_v1"
